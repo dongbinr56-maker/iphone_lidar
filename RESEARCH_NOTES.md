@@ -373,11 +373,14 @@ YOLO에서 `hand` 클래스를 빼고 MediaPipe Hands만 쓰는 선택지는 가
 검증:
 
 - 업로드 전 `git ls-remote`로 원격 `main`이 존재하는 것을 확인했다.
-- 업로드 전/후 코드 검증은 `python -m py_compile app.py`, `python Claude\tests\test_sensor_pipeline.py` 기준으로 확인한다.
+- 임시 clone에서 `python -m py_compile app.py`를 실행해 통과했다.
+- 임시 clone에서 `python Claude\tests\test_sensor_pipeline.py`를 실행했고 `RESULT: 43 passed, 0 failed`였다.
+- `git diff --cached --check`를 실행했고 공백 오류는 없었다.
+- `git push origin main`으로 원격 `main`에 업로드했다.
 
 생긴 산출물:
 
-- 원격 GitHub 저장소 `dongbinr56-maker/iphone_lidar`에 업로드용 commit이 생길 예정이다.
+- 원격 GitHub 저장소 `dongbinr56-maker/iphone_lidar`에 1차 업로드 commit `402a34d`가 생겼다.
 
 찝찝한 점 또는 다음에 볼 것:
 
