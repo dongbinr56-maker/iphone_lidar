@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>105 · 106 · 107 실시간 영상 녹화기</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div class="brand-text">
+          <h1>실시간 영상 녹화기</h1>
+          <p>105 · 106 · 107 카메라 라이브 모니터링</p>
+        </div>
+      </div>
+      <div class="topbar-status">
+        <span class="stat-pill" id="camerasPill" data-state="wait">
+          <span class="pill-dot"></span>
+          <span class="pill-text" id="camerasPillText">카메라 확인 중</span>
+        </span>
+        <span class="stat-pill" id="relayPill" data-state="wait">
+          <span class="pill-dot"></span>
+          <span class="pill-text" id="relayPillText">중계 대기</span>
+        </span>
+        <span class="clock" id="clock">--:--:--</span>
+      </div>
+    </header>
+
+    <main class="stage">
+      <section class="monitor">
+        <div class="camera-wall" id="cameraWall">
+          <div class="wall-empty" id="wallEmpty">카메라를 불러오는 중…</div>
+        </div>
+
+        <div class="telemetry" id="telemetry">
+          <article class="tel-card tel-card--wide" id="sensorCard" data-state="wait">
+            <header class="tel-head">
+              <span class="tel-title">마네킹 기준값</span>
+              <span class="tel-badge" id="sensorBadge">대기 중</span>
+            </header>
+            <p class="tel-source" id="sensorSource">연결 확인 중</p>
+            <div class="tel-metrics" id="sensorMetrics">
+              <div class="metric">
+                <span class="metric-label">표시 환기량</span>
+                <span class="metric-value" id="mVentOut">—</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">원본 val1</span>
+                <span class="metric-value" id="mVal1">—</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">환기 시간</span>
+                <span class="metric-value" id="mInsp">—</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">val1 패킷</span>
+                <span class="metric-value" id="mSensorPk">—</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">전체 패킷</span>
+                <span class="metric-value" id="mAllPk">—</span>
+              </div>
+            </div>
+            <p class="tel-note" id="sensorNote"></p>
+          </article>
+
+          <article class="tel-card" id="outputCard" data-state="wait">
+            <header class="tel-head">
+              <span class="tel-title">저장 파일</span>
+              <span class="tel-badge" id="outputBadge">없음</span>
+            </header>
+            <div class="tel-output" id="outputList">
+              <p class="output-empty">아직 저장된 파일이 없습니다.</p>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <aside class="rail">
+        <article class="rail-card meta-card" id="metaCard" data-state="wait">
+          <header class="rail-head">
+            <span class="rail-label">실험 조건</span>
+            <span class="rail-meta">세션 메타</span>
+          </header>
+          <form class="meta-form" id="experimentForm">
+            <label>
+              <span>프로토콜</span>
+              <select id="metaProtocol" required>
+                <option value="respiratory_arrest">호흡정지</option>
+                <option value="cpr_30_2">CPR 30:2</option>
+                <option value="advanced_airway">전문기도</option>
+              </select>
+            </label>
+            <label>
+              <span>시나리오</span>
+              <input id="metaScenario" type="number" min="1" max="23" placeholder="미정">
+            </label>
+            <label>
+              <span>장갑</span>
+              <select id="metaGlove" required>
+                <option value="bare">맨손</option>
+                <option value="blue_latex">파란 라텍스</option>
+              </select>
+            </label>
+            <label>
+              <span>상체</span>
+              <select id="metaTorso" required>
+                <option value="bare">노출</option>
+                <option value="clothed">의복</option>
+              </select>
+            </label>
+            <label class="meta-span">
+              <span>술자 ID</span>
+              <input id="metaOperator" type="text" autocomplete="off" placeholder="해시 저장">
+            </label>
+            <label>
+              <span>마스크</span>
+              <select id="metaMask">
+                <option value="">미정</option>
+                <option value="infant">infant</option>
+                <option value="child">child</option>
+                <option value="adult_s">adult_s</option>
+                <option value="adult_m">adult_m</option>
+                <option value="adult_l">adult_l</option>
+              </select>
+            </label>
+            <label>
+              <span>백</span>
+              <input id="metaBag" type="text" placeholder="adult">
+            </label>
+            <label>
+              <span>보조기구</span>
+              <select id="metaAdjunct">
+                <option value="none">none</option>
+                <option value="opa">OPA</option>
+                <option value="npa">NPA</option>
+              </select>
+            </label>
+            <label>
+              <span>조명</span>
+              <select id="metaLighting">
+                <option value="normal">normal</option>
+                <option value="dim">dim</option>
+                <option value="bright">bright</option>
+              </select>
+            </label>
+            <label>
+              <span>가림</span>
+              <select id="metaOcclusion">
+                <option value="none">none</option>
+                <option value="partial">partial</option>
+                <option value="heavy">heavy</option>
+              </select>
+            </label>
+            <label>
+              <span>마네킹</span>
+              <input id="metaManikin" type="text" placeholder="resusci_anne">
+            </label>
+            <label>
+              <span>캘리브</span>
+              <input id="metaCalib" type="text" placeholder="none">
+            </label>
+            <label class="meta-span">
+              <span>메모</span>
+              <textarea id="metaNotes" rows="2"></textarea>
+            </label>
+          </form>
+          <p class="meta-error" id="metaError" hidden></p>
+        </article>
+
+        <button id="recordButton" class="record-btn" type="button" disabled>
+          <span class="rec-dot" aria-hidden="true"></span>
+          <span class="rec-label" id="recButtonLabel">녹화 조건 대기</span>
+        </button>
+        <div class="record-progress" id="recordProgress" hidden>
+          <div class="record-progress-bar" id="recordProgressBar"></div>
+        </div>
+
+        <article class="rail-card" id="stateCard" data-state="wait">
+          <header class="rail-head">
+            <span class="rail-label">상태</span>
+            <span class="state-dot" id="stateDot"></span>
+          </header>
+          <p class="rail-value" id="recordState">대기 중</p>
+        </article>
+
+        <article class="rail-card rail-card--grow" id="preflightCard" data-state="wait">
+          <header class="rail-head">
+            <span class="rail-label">실행 전 확인</span>
+            <span class="rail-meta" id="preflightSummary">확인 중</span>
+          </header>
+          <ul class="checklist" id="checklist">
+            <li class="check" data-state="wait"><span class="check-icon"></span><span class="check-text">카메라 준비</span></li>
+          </ul>
+          <p class="blocker" id="blocker" hidden></p>
+        </article>
+      </aside>
+    </main>
+
+    <footer class="footer">
+      <span><span class="kbd">녹화 시작</span> 버튼을 누르면 3초 후 녹화가 시작되고, 30초 뒤 자동 종료됩니다.</span>
+      <span class="footer-meta" id="footerMeta"></span>
+    </footer>
+  </div>
+
+  <template id="cameraTileTemplate">
+    <section class="tile" data-state="wait">
+      <header class="tile-head">
+        <strong class="tile-name"></strong>
+        <span class="tile-state">
+          <span class="tile-state-dot"></span>
+          <span class="tile-state-text">대기 중</span>
+        </span>
+      </header>
+      <div class="tile-video">
+        <video autoplay muted playsinline></video>
+        <img alt="">
+        <span class="rec-overlay">REC</span>
+        <span class="tile-foot"></span>
+      </div>
+    </section>
+  </template>
+
+  <script src="/app.js"></script>
+</body>
+</html>

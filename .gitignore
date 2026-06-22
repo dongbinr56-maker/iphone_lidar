@@ -1,0 +1,7 @@
+.env
+recordings/
+runtime/
+__pycache__/
+*.pyc
+_uvicorn.*.log
+.server.pid
