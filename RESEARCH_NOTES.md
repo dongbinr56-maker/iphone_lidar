@@ -1,5 +1,7 @@
 # 연구노트
 
+정리 원칙: 항목은 날짜별, 같은 날짜 안에서는 시간순으로 둔다. 새 작업은 템플릿 바로 위에 `YYYY-MM-DD HH:mm KST - 제목` 형식으로 추가하고, 오래된 항목의 당시 판단은 사후 수정하지 않는다.
+
 ## 2026-06-19 15:48 KST - 현재 상태 정리와 기록 방식 정리
 
 오늘은 새 기능을 넣기보다, 지금 프로젝트가 어디까지 와 있는지 한 번 멈춰서 정리했다. 앞으로 작업 내용이 계속 쌓일 예정이라, 나중에 다시 읽어도 맥락을 잃지 않도록 연구노트와 에이전트 작업 지침을 같이 만들었다.
@@ -378,6 +380,84 @@ YOLO에서 `hand` 클래스를 빼고 MediaPipe Hands만 쓰는 선택지는 가
 - `git diff --cached --check`를 실행했고 공백 오류는 없었다.
 - `git push origin main`으로 원격 `main`에 업로드했다.
 
+## 2026-06-22 18:30 KST - iphone_lidar 클론 분석 + YOLOX-tiny LoRA Student 학습 디렉토리 분리 생성
+
+오늘 한 일:
+
+사용자가 `https://github.com/dongbinr56-maker/iphone_lidar`를 받아서 (1) 무슨 프로젝트인지·어디까지 됐는지 완전 분석하고, (2) 이메일로 보낸 bbox 라벨 데이터를 받아 바로 YOLOX-tiny를 학습할 수 있는 분리 디렉토리를 LoRA로 만들어 달라고 했다. 서브에이전트 워크플로우(읽기 6 + 종합 1, 총 7개)로 코드베이스를 정밀 분석한 뒤, `recording_AB/yolox_lora_train/`을 새로 만들었다.
+
+분석 결론:
+
+- 저장소는 사실상 현재 `recording_AB`의 GitHub 스냅샷(app.py 단일 파일 FastAPI)이고, 물리적으로는 105/106/107 RTSP 녹화기 + 마네킹 GT 수집기다. 인계된 베이스라인 기준 ~90% 동작, 그러나 피벗(iPhone LiDAR Teacher→RGB Student) 진짜 목표 기준으로는 ~40–50%다. `ingest_iphone_session()` 이하 LiDAR/Teacher/Student 경로는 전부 미구현(planned-only)으로 확인했다. stale-frame readiness 버그도 코드에서 재확인(`app.py:1718, 1824`는 `has_frame`만 보고 frame_age/opened/error를 안 본다).
+- 연구노트(`:160, :209, :171, :307`)가 Student 모델을 YOLOX(+ROI+TCN)로, 검출 클래스를 `bvm_bag/bvm_mask/head/torso/hand` 5종으로, 배포를 ONNX→DeepX DXNN/TensorRT로 못박아 둔 것을 근거로, 사용자의 "욜로x tiny + LoRA"를 YOLOX-tiny로 해석했다. `:171`이 이미 "5-class detector 라벨셋과 RGB-only Student 학습 repo를 분리해서 만든다"고 적어둔 그 디렉토리를 만든 셈이다.
+
+가정/결정(사용자 확인):
+
+- 구현 베이스 = 공식 Megvii YOLOX. 이 PC에 0.3.0 로컬 체크아웃(`C:\Users\USER\Documents\00_dallgoo\01_ABC\01_yolo\02_upgrade_yolo\YOLOX`)이 이미 editable 설치돼 있었다. torch 2.11+cu128, CUDA 사용 가능.
+- LoRA = backbone(CSPDarknet, `backbone.backbone.*`) 동결 + neck/head conv에 어댑터, 예측층(`*_preds`, cls는 5클래스로 재초기화)은 완전 학습. export 시 LoRA를 base 커널에 merge → 순정 YOLOX-tiny ONNX(DeepX/TensorRT 호환).
+- 데이터 = `datasets/raw/`에 드롭, prepare가 YOLO/COCO/VOC를 자동 감지·변환. 클래스 인덱스 진실원은 `data.yaml`.
+- 이메일 라벨 데이터는 최근 21일 첨부·보낸편지함에서 찾지 못했다(전부 사업 메일). 그래서 디렉토리는 "raw에 넣으면 변환"되도록만 만들고, 실제 데이터는 사용자가 위치를 알려주면 연결하기로 했다.
+
+생긴 산출물 (코드만, 데이터/가중치는 .gitignore):
+
+- `yolox_lora_train/` : data.yaml, train.py, exps/yolox_tiny_lora.py, src/lora.py, tools/{prepare_data,get_pretrained,export_onnx}.py, tests/test_lora_merge.py, README.md, requirements.txt, .gitignore, datasets/raw/DROP_DATA_HERE.md
+- 기존 `recording_AB` 코드와 `iphone_lidar` 클론(`recording_AB/iphone_lidar/`)에는 변경 없음.
+
+검증:
+
+- `tests/test_lora_merge.py`: LoRA merge 수치 동등성(오차 ~1e-6), 실제 YOLOX-tiny 주입 시 학습 파라미터 213,342/5,244,462=4.07%(backbone 동결·cls_preds 학습·LoRA gradient 흐름 확인), merge 후 출력 불변(2.9e-11) 모두 통과.
+- 합성 데이터 E2E 스모크: prepare(YOLO→COCO 10imgs/18boxes/5cats) → 실제 `yolox.tools.train` 1-epoch(체크포인트 생성) → export_onnx(LoRA merge) → onnxruntime 추론 `[1,3,416,416]→(1,3549,10)`. 전 구간 통과.
+- 주의: torch 2.11은 onnx export 기본이 dynamo라 `onnxscript`를 요구 → `tools/export_onnx.py`에서 `dynamo=False`(레거시 TorchScript 익스포터)로 고정했다.
+
+찝찝한 점 / 다음에 볼 것:
+
+- 실제 이메일 데이터의 포맷·클래스 순서를 아직 못 봤다. raw에 넣고 prepare를 돌린 뒤 class histogram과 unmapped 경고로 인덱스 정합성을 반드시 확인할 것(특히 YOLO txt에 classes.txt가 없을 때는 인덱스가 data.yaml 순서와 같다고 가정한다).
+- YOLOX-tiny는 5M로 작아 LoRA 메모리 이점이 작다. 데이터가 충분하면 `lora_enable=False`(전체 파인튜닝)와 mAP를 비교해볼 가치가 있다.
+- 사전학습 warm start용 `weights/yolox_tiny.pth`는 `tools/get_pretrained.py`로 받아야 한다(아직 미다운로드).
+
+## 2026-06-22 18:35 KST - set_image 데이터셋 세팅 + 실데이터 학습 검증
+
+오늘 한 일:
+
+사용자가 `C:\Users\USER\Downloads\set_image.7z`(64MB)를 주며 압축 풀어 학습 세팅하고 훈련 커맨드를 달라고 했다. 7-Zip으로 풀어 보니 표준 YOLO 레이아웃(`images/{train,val}`, `labels/{train,val}`)에 `classes.txt`/`data.yaml`/`manifest.json`까지 들어 있었고, 파일명이 `20260622_144250_single_frame_*` 라 iphone_lidar 캡처 세션의 RGB 프레임을 라벨링한 것이 맞았다(manifest의 source_dir도 Mac의 `ABC_Lidar/record_image`).
+
+가장 중요한 발견 — 클래스가 연구노트 가정과 다르다:
+
+- 실제 라벨 클래스(4) = `abdomen(0), face(1), bvm_mask(2), bvm_bag(3)`. 연구노트(:209)의 초기 5클래스 가정(`bvm_bag/bvm_mask/head/torso/hand`)과 이름·개수·순서가 전부 다르다. head/torso/hand 대신 abdomen/face가 쓰였고 hand 클래스는 없다. 데이터가 진실원이므로 `data.yaml`을 4클래스로, Exp의 `num_classes=4`로 맞췄다.
+- 라벨 통계: train 134장/630박스, val 33장/161박스, 합 791박스(manifest의 total_labels=791과 정확히 일치). 클래스 분포 bvm_bag 349, bvm_mask 258, abdomen 92, face 92.
+
+변경한 내용:
+
+- `data.yaml` 4클래스로 교체, `exps/yolox_tiny_lora.py`의 `num_classes=4`.
+- `tools/prepare_data.py`: 기존 `images/{train,val}` 분할이 있으면 보존하도록 보강(`--reshuffle`로 강제 재분할 가능). 연속 비디오 프레임을 랜덤 재분할하면 train/val 누수가 생기기 때문.
+- `exps/yolox_tiny_lora.py`: 이 PC에 C++ 컴파일러(cl.exe)가 없어 `yolox.layers.fast_cocoeval` JIT 빌드가 평가 때마다 터지는 문제 → import 시 `yolox.layers.COCOeval_opt`를 제거해 표준 pycocotools COCOeval로 폴백시키는 코드 추가.
+- `set_image` 데이터를 `yolox_lora_train/datasets/raw/`로 복사, prepare로 `datasets/coco/` 생성, `weights/yolox_tiny.pth`(40.7MB) 다운로드.
+
+검증:
+
+- `python tools/prepare_data.py`: YOLO 자동감지, 기존 분할 보존(train134/val33), unmapped 0, 클래스 히스토그램 정상.
+- 실데이터 1-epoch 스모크(`yolox.tools.train -b 16 --fp16`): warm-start + LoRA 주입 + 4클래스 학습 정상(total_loss 11.7→감소), 평가가 표준 COCOeval로 완주(`Use standard COCOeval`, AP 출력), `best_ckpt/latest_ckpt/epoch_1_ckpt` 저장, 크래시 없음. AP는 1에폭이라 낮음(정상).
+- 임시 학습 산출물은 전부 임시폴더에서 돌리고 삭제했다. 리포의 `datasets/coco`, `weights`만 남겼다(둘 다 .gitignore).
+
+생긴 산출물:
+
+- `yolox_lora_train/datasets/raw/`(원본 set_image), `datasets/coco/`(변환 결과), `weights/yolox_tiny.pth`. 코드 변경은 위 3개 파일.
+
+훈련 커맨드(사용자에게 제출):
+
+```
+cd C:\Users\USER\Documents\01_Git\recording_AB\yolox_lora_train
+python train.py
+```
+
+찝찝한 점 / 다음에 볼 것:
+
+- abdomen/face 클래스는 기도확보/마스크 정렬 판단용으로 보인다. 향후 Teacher metric(head angle 등)과 클래스 정의가 한 번 더 바뀔 수 있으니 data.yaml을 항상 데이터 기준으로 재확인할 것.
+- 134장은 적다. mosaic/mixup로 버티지만, 과적합 가능. val AP 추세를 보며 에폭/증강을 조절하고, 데이터가 늘면 `lora_enable=False`(전체 FT)와 비교해볼 것.
+- 평가는 표준 COCOeval라 느리다(정확도는 동일). 빠른 평가가 필요하면 MSVC 빌드툴 설치 후 fast_cocoeval를 컴파일하면 된다.
+
+추가(18:38) - 사용자가 RTX 5070 Ti 16GB에서 CUDA + FP32로 돌리길 원해 `train.py` 기본 정밀도를 FP16(AMP) 자동에서 FP32로 바꿨다(`--fp16`로 혼합정밀 opt-in). FP32 1-epoch 스모크 확인: GPU 메모리 배치16에서 942MB(16GB 대비 여유 큼), total_loss 정상 감소, best AP 4.31, 크래시 없음. 메모리 여유가 커서 `-b 32`~`-b 64`로 올려도 된다.
+
 생긴 산출물:
 
 - 원격 GitHub 저장소 `dongbinr56-maker/iphone_lidar`에 1차 업로드 commit `402a34d`가 생겼다.
@@ -386,6 +466,234 @@ YOLO에서 `hand` 클래스를 빼고 MediaPipe Hands만 쓰는 선택지는 가
 
 - 이 Windows 폴더 자체는 Git 저장소가 아니어서, 임시 clone을 만들어 그 안에 파일을 복사한 뒤 push하는 방식으로 진행한다.
 - 실제 iPhone LiDAR capture app 소스는 이 Windows 폴더에 없으므로 이번 push에는 포함되지 않는다.
+
+## 2026-06-22 18:49 KST - 현재 프로젝트 완전 분석 보고서 작성
+
+오늘 한 일:
+
+사용자가 지금 구현하고 작업 중인 프로젝트가 무엇인지 완벽하게 분석해서 보고해 달라고 했다. 현재 폴더의 코드, 웹 프론트, 센서 테스트, YOLOX LoRA 학습 디렉토리, 연구노트, 이전 메모리 요약을 대조해서 프로젝트 정체와 구현/미구현 경계를 정리했다.
+
+확인한 파일/데이터:
+
+- `app.py`
+- `web/index.html`, `web/app.js`, `web/styles.css`
+- `Claude/tests/test_sensor_pipeline.py`
+- `iphone_lidar/README.md`, `iphone_lidar/AGENTS.md`
+- `yolox_lora_train/README.md`, `data.yaml`, `exps/yolox_tiny_lora.py`, `train.py`, `src/lora.py`
+- `yolox_lora_train/datasets/coco/annotations/instances_train2017.json`, `instances_val2017.json`
+- `yolox_lora_train/runs/20260622_184737/`
+- `.env.example`, `.gitignore`, `.env` key 목록(값은 보지 않고 redacted로만 확인)
+
+변경한 내용:
+
+- 새 보고서 `PROJECT_ANALYSIS_2026-06-22.md`를 추가했다.
+- 코드 동작은 바꾸지 않았다.
+
+검증:
+
+- `python -m py_compile app.py` 통과.
+- `python Claude\tests\test_sensor_pipeline.py` 결과 `RESULT: 43 passed, 0 failed`.
+- `cd yolox_lora_train; python tests\test_lora_merge.py` 결과 `ALL LORA TESTS PASSED`.
+- `http://127.0.0.1:8000/health`는 연결 실패였다. 현재 uvicorn 서버는 떠 있지 않고, `.server.pid`의 PID 28604도 존재하지 않는다.
+
+생긴 산출물:
+
+- `PROJECT_ANALYSIS_2026-06-22.md`
+
+찝찝한 점 또는 다음에 볼 것:
+
+- `recordings/`는 현재 비어 있어 최신 schema의 실제 녹화 샘플이 없다.
+- `yolox_lora_train/runs/20260622_184737`은 manifest와 train log만 있고 metrics/summary가 없어 완료 run으로 보면 안 된다. PID 23568의 `yolox.tools.train` 프로세스가 아직 남아 있었다.
+- `iphone_lidar/` 폴더는 이름과 달리 실제 iOS/ARKit 앱 소스가 아니라 recorder 스냅샷이므로 다음 작업자가 오해하지 않게 문서 정리가 필요하다.
+
+## 2026-06-22 18:54 KST - 현재 방법론 외부 사례 조사
+
+오늘 한 일:
+
+사용자가 지금 구현하고 검증하려는 방법론이 그대로 가도 되는지, 유사 연구 사례가 있는지 최신 기준으로 조사해 달라고 했다. CPR/인공호흡 연구뿐 아니라 HAR, RGB-D teacher/student distillation, PEFT/LoRA object detection 사례까지 넓혀서 확인했다.
+
+확인한 파일/데이터:
+
+- `PROJECT_ANALYSIS_2026-06-22.md`
+- `RESEARCH_NOTES.md`
+- 외부 논문/문서: CPR-Coach(CVPR 2024), CPR action standardization(Sensors 2024), artificial respiration CV evaluation(Applied Sciences 2026), AHA 2025 guideline highlights, BENGI BVM feedback device(BMC 2022), camera-only CPR assessment(2025), multimodal distillation(ICCV 2023), HFD-Teacher(ICCV 2025), HAR survey(Sensors 2025), LoRA-Det(2024)
+
+변경한 내용:
+
+- `METHODOLOGY_RESEARCH_REVIEW_2026-06-22.md`를 추가했다.
+- 코드와 학습 설정은 바꾸지 않았다.
+
+검증:
+
+- 이번 작업은 문헌 조사/방법론 판단이라 코드 테스트는 새로 돌리지 않았다.
+- 결론은 "방향 유지, 검증 체계 강화"다. 마네킹 `val1` GT를 source of truth로 두고 RGB-D/다시점 영상은 Teacher/설명/Student 학습 신호로 쓰는 방향은 유사 연구 흐름과 맞는다.
+
+생긴 산출물:
+
+- `METHODOLOGY_RESEARCH_REVIEW_2026-06-22.md`
+
+찝찝한 점 또는 다음에 볼 것:
+
+- 방법론 검증이라고 부르려면 실제 최신 schema 녹화 샘플, iPhone ingest, PC/iPhone/sensor clock alignment, session/operator 기준 holdout, LoRA/full fine-tuning ablation이 필요하다.
+- 현재 bbox 데이터 167장은 scaffold 검증에는 충분하지만 연구 주장에는 부족하다.
+
+## 2026-06-22 23:45 KST - YOLOX 4클래스 정정과 V2 학습
+
+오늘 한 일:
+
+사용자가 YOLO 모델은 5클래스가 아니라 4클래스라고 바로잡았고, 기존 학습 모델은 보존한 채 현재 데이터셋 기준으로 성능을 더 끌어올릴 수 있는 방법을 반영해서 V2 학습을 돌려 달라고 했다. 실제 `data.yaml`과 COCO annotation 기준 클래스는 `abdomen`, `face`, `bvm_mask`, `bvm_bag` 4개라서, 문서와 테스트에 남아 있던 5클래스 표현을 정리했다.
+
+확인한 파일/데이터:
+
+- `yolox_lora_train/data.yaml`
+- `yolox_lora_train/datasets/coco/annotations/instances_train2017.json`, `instances_val2017.json`
+- `yolox_lora_train/runs/20260622_185450/yolox_tiny_lora/best_ckpt.pth`
+- `yolox_lora_train/runs/20260622_233439_v2_head_ft/run_summary.json`, `epochs.jsonl`, `metrics.jsonl`
+
+변경한 내용:
+
+- `yolox_lora_train/README.md`, `data.yaml`, `datasets/raw/DROP_DATA_HERE.md`, `exps/yolox_tiny_lora.py`, `tests/test_lora_merge.py`, `src/run_logger.py`의 5클래스/출력 경로 설명을 4클래스 기준으로 고쳤다.
+- `yolox_lora_train/exps/yolox_tiny_lora_v2.py`를 추가했다. V2는 V1 best checkpoint에서 시작하고, 640x640 고정 해상도, mosaic/mixup/hsv/flip 비활성화, LoRA + head stem/cls/reg base conv 일부 unfreeze, 30 epoch 설정으로 뒀다.
+- `yolox_lora_train/train.py`와 `tools/export_onnx.py`에 `--exp-file`을 추가해서 V1/V2 exp를 분리해서 실행할 수 있게 했다.
+- PyTorch 2.6 이후 `torch.load(weights_only=True)` 기본값 때문에 YOLOX의 `-c` 로딩이 V1 checkpoint metadata에서 막혔다. 기존 V1 파일은 건드리지 않고, 새 run 폴더 안에 tensor state_dict만 담은 `trusted_init_ckpt.pth`를 만들어 V2 초기값으로 쓰도록 했다.
+
+검증:
+
+- `cd yolox_lora_train; python -m py_compile train.py tools\export_onnx.py exps\yolox_tiny_lora.py exps\yolox_tiny_lora_v2.py src\lora.py src\run_logger.py tests\test_lora_merge.py` 통과.
+- `cd yolox_lora_train; python tests\test_lora_merge.py` 결과 `ALL LORA TESTS PASSED`.
+- `python train.py --help`, `python tools\export_onnx.py --help`에서 `--exp-file`과 checkpoint 옵션 확인.
+- V2 학습 명령은 `python train.py --exp-file exps/yolox_tiny_lora_v2.py --name v2_head_ft -b 16 --log-every 1 -c runs\20260622_185450\yolox_tiny_lora\best_ckpt.pth`.
+- 완료 run은 `runs/20260622_233439_v2_head_ft`, `return_code=0`, 270 iterations, 30 evaluations.
+- V1 best AP@[.50:.95]는 `0.819`였고, V2 best AP@[.50:.95]는 epoch 25에서 `0.874`였다. 같은 val set 기준으로 +0.055 개선이다. epoch 30 최종 AP는 `0.872`라 best 근처에서 끝났다.
+
+생긴 산출물:
+
+- `yolox_lora_train/runs/20260622_233439_v2_head_ft/yolox_tiny_lora_v2/best_ckpt.pth`
+- `yolox_lora_train/runs/20260622_233439_v2_head_ft/run_manifest.json`, `metrics.jsonl`, `epochs.jsonl`, `run_summary.json`
+- `yolox_lora_train/runs/20260622_233439_v2_head_ft/trusted_init_ckpt.pth`, `trusted_init_ckpt.json`
+- `runs/20260622_233210_v2_head_ft`는 중간 실패 run이다. YOLOX가 checkpoint를 읽기 전에 막혀서 0 iteration/0 eval이고 성능 판단에 쓰면 안 된다.
+
+찝찝한 점 또는 다음에 볼 것:
+
+- 현재 val은 33장/161 boxes라 AP가 높게 나와도 실제 일반화 성능이라고 강하게 주장하기엔 작다. 다음 개선은 epoch를 더 늘리는 것보다 session/operator 기준 holdout과 실제 녹화 데이터 추가가 더 중요하다.
+- 25 epoch 이후 AP가 0.86~0.87대에서 흔들렸고 final도 best 근처라, 현재 데이터셋에서는 장시간 추가 학습보다 best checkpoint를 쓰는 쪽이 낫다.
+- class별 AP는 현재 jsonl 요약에 따로 남지 않는다. 어느 클래스가 병목인지 보려면 COCO evaluator의 per-class 출력 또는 별도 분석 스크립트를 붙이는 게 좋다.
+
+## 2026-06-23 08:55 KST - abc_collector_v3 V14 FP32와 현재 V2 모델 비교
+
+오늘 한 일:
+
+사용자가 `abc_collector_v3`에 있는 V14 FP32 모델을 현재 직접 라벨링한 데이터셋에 올려서, 방금 학습한 V2 모델과 비교해 달라고 했다. `abc_collector_v3/models/manifest.json`을 보니 active 모델은 `bvm_v14_fp32_320.onnx`였고, fallback으로 `bvm_v14_fp32.onnx`도 있어서 둘 다 평가했다.
+
+확인한 파일/데이터:
+
+- 현재 val set: `yolox_lora_train/datasets/coco/annotations/instances_val2017.json`, `val2017/`
+- 현재 모델: `yolox_lora_train/runs/20260622_233439_v2_head_ft/yolox_tiny_lora_v2/best_ckpt.pth`
+- 현재 ONNX export: `yolox_lora_train/weights/yolox_tiny_lora_v2_640.onnx`
+- V14 active: `C:\Users\USER\Documents\01_Git\abc_collector_v3\models\bvm_v14_fp32_320.onnx`
+- V14 fallback: `C:\Users\USER\Documents\01_Git\abc_collector_v3\models\bvm_v14_fp32.onnx`
+- V14 manifest class 순서: `bvm_bag`, `bvm_mask`, `head`, `torso`
+
+변경한 내용:
+
+- `yolox_lora_train/tools/export_onnx.py`에 trusted local checkpoint loader를 추가했다. PyTorch 2.6+의 `weights_only=True` 기본값 때문에 로컬 YOLOX checkpoint metadata가 막히는 문제를 피하기 위한 것이다.
+- `yolox_lora_train/tools/compare_v14_on_current_data.py`를 추가했다. 같은 COCO val annotation, 같은 ONNX 후처리, 같은 conf/nms로 현재 V2 ONNX와 V14 ONNX를 비교한다.
+- `MODEL_COMPARISON_V14_2026-06-23.md`를 추가했다.
+
+검증:
+
+- `python -m py_compile tools\export_onnx.py tools\compare_v14_on_current_data.py` 통과.
+- 현재 V2 checkpoint를 `weights/yolox_tiny_lora_v2_640.onnx`로 export 완료.
+- 현재 V2 checkpoint를 YOLOX native eval로 다시 확인: AP `0.874`, AP50 `0.999`, AP75 `0.978`, AR100 `0.906`.
+- 같은 ONNX 후처리 기준 비교:
+  - current V2 ONNX 640: AP `0.734`, AP50 `0.937`, AR100 `0.838`
+  - V14 FP32 320: AP `0.048`, AP50 `0.094`, AR100 `0.110`
+  - V14 FP32 640: AP `0.301`, AP50 `0.417`, AR100 `0.407`
+
+생긴 산출물:
+
+- `MODEL_COMPARISON_V14_2026-06-23.md`
+- `yolox_lora_train/tools/compare_v14_on_current_data.py`
+- `yolox_lora_train/weights/yolox_tiny_lora_v2_640.onnx`
+- `yolox_lora_train/runs/compare_v14_20260623_084803/`
+- `yolox_lora_train/runs/compare_v14_20260623_085100/`
+
+찝찝한 점 또는 다음에 볼 것:
+
+- V14는 `head/torso`이고 현재 데이터는 `face/abdomen`이라, `head->face`, `torso->abdomen` 매핑은 근사 비교다. 특히 face/head는 라벨 정의가 달라서 V14에 불리할 수 있다.
+- 그래도 BVM 핵심 클래스만 봐도 V14가 현재 V2보다 많이 낮다. V14 640 기준 `bvm_mask` AP `0.086`, `bvm_bag` AP `0.359`이고, current V2 ONNX는 각각 `0.552`, `0.645`다.
+- 현재 V2는 native eval AP `0.874`인데 ONNX 공통 후처리에서는 `0.734`다. 배포용 ONNX 후처리와 YOLOX native evaluator 사이의 차이를 줄이려면 ONNX postprocess parity 테스트를 따로 만드는 게 좋다.
+
+## 2026-06-23 11:53 KST - YOLO 단계 완료 전제와 LiDAR 흉부 상승 확인
+
+오늘 한 일:
+
+사용자가 이제 YOLO detector 단계는 됐다고 보고, LiDAR 센서 기반으로 흉부 상승을 검출할 수 있다는 확인 내용을 최신 연구노트에 반영해 달라고 했다. 앞으로 노트는 날짜별로 정리해야 한다는 기준도 같이 명시했다.
+
+현재 판단:
+
+- YOLOX-tiny LoRA V2는 현재 라벨링 데이터셋 기준 detector baseline으로 둔다. 아직 val set이 작고 ONNX 후처리 parity는 남아 있지만, 다음 단계 계획에서는 YOLO bbox 검출 단계가 1차 완료된 것으로 취급한다.
+- LiDAR/RGB-D 기반 흉부 상승 검출은 가능한 것으로 확인된 상태로 기록한다. 즉, depth displacement나 3D metric curve를 이용해 흉부/복부 쪽 움직임을 시간축에서 볼 수 있고, 이 신호를 `ChestHead/TCN` 또는 effective ventilation 후보 판단의 Teacher metric으로 사용할 수 있다.
+- 다만 LiDAR 흉부 상승은 "환기가 실제로 성공했다"는 최종 판정과 같지 않다. 최종 effective ventilation 판단은 squeeze, mask 위치/밀착 위험, chest rise, 마네킹 serial `val1/flow` 증거를 함께 봐야 한다. 기존 원칙대로 환기/스퀴즈의 source of truth는 마네킹 센서 GT로 둔다.
+
+확인한 파일/데이터:
+
+- `RESEARCH_NOTES.md`
+- 기존 방법론/프로젝트 정리: LiDAR/RGB-D는 Teacher/metric anchor, RGB-only YOLOX는 Student detector라는 방향
+- 최근 모델 산출물: `yolox_lora_train/runs/20260622_233439_v2_head_ft/yolox_tiny_lora_v2/best_ckpt.pth`
+
+변경한 내용:
+
+- `RESEARCH_NOTES.md` 상단에 날짜별 정리 원칙을 추가했다.
+- 최신 항목으로 YOLO detector 1차 완료 전제와 LiDAR 기반 흉부 상승 검출 가능 확인을 추가했다.
+
+검증:
+
+- 이번 작업은 연구노트 최신화라 코드 테스트는 돌리지 않았다.
+- 현재 기록은 사용자 확인 사항과 기존 방법론 방향을 정리한 것이다. 실제 재현용 산출물까지 닫으려면 LiDAR 세션 경로, frame index, depth displacement 계산 결과, overlay/curve 이미지를 다음 항목에 붙이는 것이 좋다.
+
+생긴 산출물:
+
+- `RESEARCH_NOTES.md` 최신 항목
+
+찝찝한 점 또는 다음에 볼 것:
+
+- LiDAR 흉부 상승 확인을 연구 주장으로 쓰려면 어떤 세션에서 어떤 ROI/metric으로 확인했는지 남겨야 한다. 최소한 session id, position tag, frame range, depth/confidence 품질, displacement curve, sensor `val1/flow`와의 시간 정렬 결과가 필요하다.
+- YOLO bbox 검출은 다음 단계의 입력으로 쓰되, 흉부 상승과 환기 성공 판정은 bbox AP만으로 평가하면 안 된다.
+- 날짜별 정리를 유지하려면 앞으로 새 작업은 이 템플릿 위에 시간순으로 추가하고, 과거의 5클래스 가정 같은 오래된 판단은 역사 기록으로 남겨 둔다.
+
+## 2026-06-23 12:20 KST - 미구현 위험요소에 대한 타 산업 방법론 로컬라이징 조사
+
+오늘 한 일:
+
+사용자가 지금 걱정하고 있지만 아직 구현하지 못한 부분들에 대해, 다른 산업 분야에서는 비슷한 문제를 어떻게 해결하는지 조사해 달라고 했다. 단순 참고 사례가 아니라, 우리 프로젝트에 거의 그대로 가져와서 로컬라이징할 수 있는 방법론 위주로 봤다.
+
+확인한 파일/데이터:
+
+- `METHODOLOGY_RESEARCH_REVIEW_2026-06-22.md`
+- `RESEARCH_NOTES.md`
+- 기존 프로젝트 원칙: BVM squeeze/ventilation의 source of truth는 마네킹 `val1`/flow 센서 GT이고, RGB/RTSP/iPhone RGB-D/YOLOX는 설명과 Student 학습 계층이라는 경계
+- 외부 사례: 자율주행 sensor fusion/occlusion tracking, 운전자 모니터링 occlusion-aware pipeline, 산업용 비전 metrology/Gage R&R, 스포츠/재활 markerless motion capture 검증, 웨어러블 HAR time-series annotation, 산업 조립 action segmentation, BVM flow/volume feedback device, AHA/Red Cross 2025 CPR 관련 문서
+
+변경한 내용:
+
+- `METHODOLOGY_CROSS_INDUSTRY_LOCALIZATION_2026-06-23.md`를 새로 추가했다.
+- 코드, 데이터, 모델, 녹화 파일은 건드리지 않았다.
+
+검증:
+
+- 이번 작업은 문헌/방법론 조사라 코드 테스트는 돌리지 않았다.
+- 조사 결론은 이전 판단과 일치한다. 다른 산업에서도 숨은 상태를 카메라 하나로 직접 확정하지 않고, 기준 센서/보정/시간축 상태모델/unknown 처리를 조합한다. 따라서 우리도 `val1`/flow GT, LiDAR Teacher, RGB Student, temporal state machine의 역할을 더 엄격히 분리하는 쪽이 맞다.
+
+생긴 산출물:
+
+- `METHODOLOGY_CROSS_INDUSTRY_LOCALIZATION_2026-06-23.md`
+
+찝찝한 점 또는 다음에 볼 것:
+
+- 이 보고서는 방법론 조사라서 아직 실제 세션 artifact 검증은 아니다. 바로 다음 단계는 ventilation-only 최신 세션에서 LiDAR chest-rise curve와 sensor GT를 같은 타임라인에 놓는 재현 산출물을 만드는 것이다.
+- 기도확보와 mask occlusion은 `OPEN/CLOSED` 이진 분류보다 `visible`, `occluded_maintained`, `collapse_suspected`, `unknown` 상태 schema를 먼저 고정해야 한다.
+- 30:2 CPR은 바로 섞기보다 ventilation-only와 airway-bvm-only를 닫은 뒤, compression artifact를 분리할 수 있는 phase event label과 local baseline 계약을 추가하는 것이 안전하다.
 
 ## 새 항목 템플릿
 
